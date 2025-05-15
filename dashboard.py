@@ -38,22 +38,35 @@ if 'employee_data' not in st.session_state:
 # Load secrets for Odoo connection
 def load_secrets():
     try:
-        import toml
+        # First try to get secrets from Streamlit's secrets management
+        st.session_state.odoo_url = st.secrets.get("ODOO_URL", "")
+        st.session_state.odoo_db = st.secrets.get("ODOO_DB", "")
+        st.session_state.odoo_username = st.secrets.get("ODOO_USERNAME", "")
+        st.session_state.odoo_password = st.secrets.get("ODOO_PASSWORD", "")
         
-        # Try to load the secrets.toml file
-        with open("secrets.toml", "r") as f:
-            secrets = toml.load(f)
-            
-        # Set session state values
-        st.session_state.odoo_url = secrets.get("ODOO_URL", "")
-        st.session_state.odoo_db = secrets.get("ODOO_DB", "")
-        st.session_state.odoo_username = secrets.get("ODOO_USERNAME", "")
-        st.session_state.odoo_password = secrets.get("ODOO_PASSWORD", "")
-        
+        # Log successful loading (don't log the actual values)
+        logger.info("Successfully loaded Odoo credentials from Streamlit secrets")
         return True
     except Exception as e:
-        logger.error(f"Error loading secrets: {e}")
-        return False
+        # Fall back to local secrets.toml file if Streamlit secrets fail
+        try:
+            import toml
+            
+            # Try to load the secrets.toml file
+            with open("secrets.toml", "r") as f:
+                secrets = toml.load(f)
+                
+            # Set session state values
+            st.session_state.odoo_url = secrets.get("ODOO_URL", "")
+            st.session_state.odoo_db = secrets.get("ODOO_DB", "")
+            st.session_state.odoo_username = secrets.get("ODOO_USERNAME", "")
+            st.session_state.odoo_password = secrets.get("ODOO_PASSWORD", "")
+            
+            logger.info("Successfully loaded Odoo credentials from local secrets.toml")
+            return True
+        except Exception as local_e:
+            logger.error(f"Error loading secrets: {e}, then {local_e}")
+            return False
 
 # Load employee data at startup
 def load_employee_data():
@@ -1079,6 +1092,8 @@ def main():
     st.title("📊 Timesheet Compliance Dashboard")
     st.markdown("### View team compliance metrics and track missing timesheets")
     
+    load_secrets()
+
     # Sidebar content
     with st.sidebar:
         st.header("Dashboard Controls")
