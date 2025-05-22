@@ -20,14 +20,6 @@ if 'odoo_uid' not in st.session_state:
     st.session_state.odoo_uid = None
 if 'odoo_models' not in st.session_state:
     st.session_state.odoo_models = None
-if 'odoo_db' not in st.session_state:
-    st.session_state.odoo_db = ""
-if 'odoo_url' not in st.session_state:
-    st.session_state.odoo_url = ""
-if 'odoo_username' not in st.session_state:
-    st.session_state.odoo_username = ""
-if 'odoo_password' not in st.session_state:
-    st.session_state.odoo_password = ""
 if 'model_fields_cache' not in st.session_state:
     st.session_state.model_fields_cache = {}
 if 'last_error' not in st.session_state:
@@ -35,38 +27,17 @@ if 'last_error' not in st.session_state:
 if 'employee_data' not in st.session_state:
     st.session_state.employee_data = None
 
-# Load secrets for Odoo connection
-def load_secrets():
-    try:
-        # First try to get secrets from Streamlit's secrets management
-        st.session_state.odoo_url = st.secrets.get("ODOO_URL", "")
-        st.session_state.odoo_db = st.secrets.get("ODOO_DB", "")
-        st.session_state.odoo_username = st.secrets.get("ODOO_USERNAME", "")
-        st.session_state.odoo_password = st.secrets.get("ODOO_PASSWORD", "")
-        
-        # Log successful loading (don't log the actual values)
-        logger.info("Successfully loaded Odoo credentials from Streamlit secrets")
-        return True
-    except Exception as e:
-        # Fall back to local secrets.toml file if Streamlit secrets fail
-        try:
-            import toml
-            
-            # Try to load the secrets.toml file
-            with open("secrets.toml", "r") as f:
-                secrets = toml.load(f)
-                
-            # Set session state values
-            st.session_state.odoo_url = secrets.get("ODOO_URL", "")
-            st.session_state.odoo_db = secrets.get("ODOO_DB", "")
-            st.session_state.odoo_username = secrets.get("ODOO_USERNAME", "")
-            st.session_state.odoo_password = secrets.get("ODOO_PASSWORD", "")
-            
-            logger.info("Successfully loaded Odoo credentials from local secrets.toml")
-            return True
-        except Exception as local_e:
-            logger.error(f"Error loading secrets: {e}, then {local_e}")
-            return False
+# Permanent Odoo connection credentials
+ODOO_URL = "https://prezlab.odoo.com/"
+ODOO_DB = "odoo-ps-psae-prezlab-main-10779811"
+ODOO_USERNAME = "sanad.zaqtan@prezlab.com"
+ODOO_PASSWORD = "ODOOprezlab123"
+
+# Set session state values with permanent credentials
+st.session_state.odoo_url = ODOO_URL
+st.session_state.odoo_db = ODOO_DB
+st.session_state.odoo_username = ODOO_USERNAME
+st.session_state.odoo_password = ODOO_PASSWORD
 
 # Load employee data at startup
 def load_employee_data():
@@ -268,7 +239,7 @@ def get_planning_slots(models, uid, odoo_db, odoo_password, start_date, end_date
         return []
 
 def get_timesheet_entries(models, uid, odoo_db, odoo_password, start_date, end_date=None):
-    """Get timesheet entries for a date range"""
+    """Get timesheet entries for a date range including creation date for timeliness analysis"""
     try:
         if end_date is None:
             end_date = start_date
@@ -289,10 +260,10 @@ def get_timesheet_entries(models, uid, odoo_db, odoo_password, start_date, end_d
         fields_info = get_model_fields(models, uid, odoo_db, odoo_password, 'account.analytic.line')
         available_fields = list(fields_info.keys())
         
-        # Fields we want (if they exist)
+        # Fields we want (if they exist) - including create_date for timeliness analysis
         desired_fields = [
             'id', 'name', 'date', 'unit_amount', 'employee_id', 
-            'task_id', 'project_id', 'user_id', 'company_id'
+            'task_id', 'project_id', 'user_id', 'company_id', 'create_date'
         ]
         
         # Only request fields that exist
@@ -407,6 +378,72 @@ def load_employee_manager_mapping():
     except Exception as e:
         logger.error(f"Error loading employee mapping: {e}")
         return {}
+
+def analyze_timesheet_timeliness(timesheet_entries):
+    """Analyze how timely people are at entering their timesheets"""
+    timeliness_data = []
+    
+    for entry in timesheet_entries:
+        try:
+            # Get work date and creation date
+            work_date_str = entry.get('date', '')
+            create_date_str = entry.get('create_date', '')
+            
+            if not work_date_str or not create_date_str:
+                continue
+                
+            # Parse dates
+            work_date = datetime.strptime(work_date_str, "%Y-%m-%d").date()
+            
+            # Handle different datetime formats for create_date
+            if isinstance(create_date_str, str):
+                try:
+                    # Try with timezone info first
+                    if '+' in create_date_str or create_date_str.endswith('Z'):
+                        # Remove timezone info for parsing
+                        clean_create_date = create_date_str.split('+')[0].split('Z')[0]
+                        create_datetime = datetime.strptime(clean_create_date, "%Y-%m-%d %H:%M:%S")
+                    else:
+                        create_datetime = datetime.strptime(create_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    # Try parsing just the date part
+                    create_datetime = datetime.strptime(create_date_str[:10], "%Y-%m-%d")
+                    
+                create_date = create_datetime.date()
+                
+                # Calculate delay in days
+                delay_days = (create_date - work_date).days
+                
+                # Get employee name
+                employee_name = "Unknown"
+                if 'employee_id' in entry and entry['employee_id'] and isinstance(entry['employee_id'], list) and len(entry['employee_id']) > 1:
+                    employee_name = entry['employee_id'][1]
+                
+                # Categorize timeliness
+                if delay_days <= 0:
+                    timeliness_category = "Same Day"
+                elif delay_days == 1:
+                    timeliness_category = "1 Day Late"
+                elif delay_days == 2:
+                    timeliness_category = "2 Days Late"
+                else:
+                    timeliness_category = "3+ Days Late"
+                
+                timeliness_data.append({
+                    'work_date': work_date,
+                    'create_date': create_date,
+                    'delay_days': delay_days,
+                    'timeliness_category': timeliness_category,
+                    'employee_name': employee_name,
+                    'entry_id': entry.get('id'),
+                    'hours': entry.get('unit_amount', 0)
+                })
+                
+        except Exception as e:
+            logger.warning(f"Error processing timesheet entry for timeliness analysis: {e}")
+            continue
+    
+    return pd.DataFrame(timeliness_data)
 
 def get_dashboard_data(end_date, shift_status):
     """Get report data for dashboard without sending any notifications"""
@@ -862,6 +899,187 @@ def render_summary_metrics(df, missing_count, timesheet_count):
         
         st.altair_chart(chart, use_container_width=True)
 
+def render_timesheet_timeliness_analysis(start_date, end_date):
+    """Render analysis of how timely people are at entering timesheets"""
+    st.header("⏰ Timesheet Entry Timeliness Analysis")
+    st.markdown("*Analyzing how quickly people enter their timesheet after completing work*")
+    
+    # Get timesheet data for analysis
+    uid = st.session_state.odoo_uid
+    models = st.session_state.odoo_models
+    odoo_db = st.session_state.odoo_db
+    odoo_password = st.session_state.odoo_password
+    
+    if not uid or not models:
+        st.error("Not connected to Odoo")
+        return
+    
+    with st.spinner("Analyzing timesheet entry patterns..."):
+        # Get timesheet entries for the period
+        timesheet_entries = get_timesheet_entries(models, uid, odoo_db, odoo_password, start_date, end_date)
+        
+        if not timesheet_entries:
+            st.info("No timesheet entries found for the selected date range.")
+            return
+        
+        # Analyze timeliness
+        timeliness_df = analyze_timesheet_timeliness(timesheet_entries)
+        
+        if timeliness_df.empty:
+            st.warning("Could not analyze timesheet timeliness due to missing date information.")
+            return
+    
+    # Display overall timeliness metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total_entries = len(timeliness_df)
+    same_day_entries = len(timeliness_df[timeliness_df['timeliness_category'] == 'Same Day'])
+    late_entries = len(timeliness_df[timeliness_df['delay_days'] > 0])
+    avg_delay = timeliness_df['delay_days'].mean()
+    
+    with col1:
+        same_day_percentage = (same_day_entries / total_entries * 100) if total_entries > 0 else 0
+        st.metric(
+            "Same Day Entry Rate", 
+            f"{same_day_percentage:.1f}%",
+            help="Percentage of timesheets entered on the same day as work was performed"
+        )
+    
+    with col2:
+        st.metric(
+            "Late Entries", 
+            f"{late_entries}",
+            help="Number of timesheet entries submitted after the work date"
+        )
+    
+    with col3:
+        st.metric(
+            "Average Delay", 
+            f"{avg_delay:.1f} days",
+            help="Average number of days between work date and timesheet entry"
+        )
+    
+    with col4:
+        # Calculate very late entries (3+ days)
+        very_late_entries = len(timeliness_df[timeliness_df['delay_days'] >= 3])
+        st.metric(
+            "Very Late Entries (3+ days)", 
+            f"{very_late_entries}",
+            help="Entries submitted 3 or more days after work was performed"
+        )
+    
+    # Timeliness distribution chart
+    st.subheader("Timesheet Entry Timeliness Distribution")
+    
+    # Calculate distribution
+    timeliness_counts = timeliness_df['timeliness_category'].value_counts().reset_index()
+    timeliness_counts.columns = ['Timeliness Category', 'Count']
+    
+    # Define order and colors for consistency
+    category_order = ['Same Day', '1 Day Late', '2 Days Late', '3+ Days Late']
+    category_colors = {
+        'Same Day': '#00CC96',
+        '1 Day Late': '#FFA15A', 
+        '2 Days Late': '#FF6692',
+        '3+ Days Late': '#EF553B'
+    }
+    
+    # Create the chart
+    chart = alt.Chart(timeliness_counts).mark_bar().encode(
+        x=alt.X('Count:Q', title='Number of Entries'),
+        y=alt.Y('Timeliness Category:N', 
+                sort=category_order,
+                title=''),
+        color=alt.Color('Timeliness Category:N',
+                       scale=alt.Scale(
+                           domain=list(category_colors.keys()),
+                           range=list(category_colors.values())
+                       ),
+                       legend=None),
+        tooltip=['Timeliness Category', 'Count']
+    ).properties(height=300)
+    
+    st.altair_chart(chart, use_container_width=True)
+    
+    # Daily trend analysis
+    st.subheader("Daily Timeliness Trends")
+    
+    # Group by work date and calculate daily timeliness metrics
+    daily_timeliness = timeliness_df.groupby('work_date').agg({
+        'delay_days': ['count', 'mean'],
+        'timeliness_category': lambda x: (x == 'Same Day').sum()
+    }).reset_index()
+    
+    # Flatten column names
+    daily_timeliness.columns = ['work_date', 'total_entries', 'avg_delay', 'same_day_count']
+    daily_timeliness['same_day_rate'] = (daily_timeliness['same_day_count'] / daily_timeliness['total_entries'] * 100)
+    
+    # Create trend chart
+    trend_chart = alt.Chart(daily_timeliness).mark_line(point=True).encode(
+        x=alt.X('work_date:T', title='Work Date'),
+        y=alt.Y('same_day_rate:Q', 
+                scale=alt.Scale(domain=[0, 100]),
+                title='Same Day Entry Rate (%)'),
+        tooltip=['work_date:T', 'same_day_rate:Q', 'total_entries:Q', 'avg_delay:Q']
+    ).properties(height=300)
+    
+    st.altair_chart(trend_chart, use_container_width=True)
+    
+    # Employee timeliness rankings
+    st.subheader("Employee Timeliness Performance")
+    
+    employee_timeliness = timeliness_df.groupby('employee_name').agg({
+        'delay_days': ['count', 'mean'],
+        'timeliness_category': lambda x: (x == 'Same Day').sum(),
+        'hours': 'sum'
+    }).reset_index()
+    
+    # Flatten column names
+    employee_timeliness.columns = ['employee_name', 'total_entries', 'avg_delay', 'same_day_count', 'total_hours']
+    employee_timeliness['same_day_rate'] = (employee_timeliness['same_day_count'] / employee_timeliness['total_entries'] * 100)
+    
+    # Filter to employees with at least 3 entries for meaningful analysis
+    employee_timeliness = employee_timeliness[employee_timeliness['total_entries'] >= 3]
+    
+    # Sort by same day rate
+    employee_timeliness = employee_timeliness.sort_values('same_day_rate', ascending=False)
+    
+    if not employee_timeliness.empty:
+        # Display top and bottom performers
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🏆 Top Performers (Same Day Entry Rate)**")
+            top_performers = employee_timeliness.head(10)
+            st.dataframe(
+                top_performers[['employee_name', 'same_day_rate', 'total_entries', 'avg_delay']].round(1),
+                use_container_width=True
+            )
+        
+        with col2:
+            st.markdown("**⚠️ Needs Improvement (Lowest Same Day Rates)**")
+            bottom_performers = employee_timeliness.tail(10)
+            st.dataframe(
+                bottom_performers[['employee_name', 'same_day_rate', 'total_entries', 'avg_delay']].round(1),
+                use_container_width=True
+            )
+        
+        # Create employee performance chart (top 15 by entry count)
+        top_by_volume = employee_timeliness.nlargest(15, 'total_entries')
+        
+        emp_chart = alt.Chart(top_by_volume).mark_bar().encode(
+            x=alt.X('same_day_rate:Q', title='Same Day Entry Rate (%)'),
+            y=alt.Y('employee_name:N', sort='-x', title=''),
+            color=alt.Color('same_day_rate:Q', 
+                           scale=alt.Scale(scheme='RdYlGn'),
+                           legend=None),
+            tooltip=['employee_name', 'same_day_rate:Q', 'total_entries:Q', 'avg_delay:Q']
+        ).properties(height=400)
+        
+        st.altair_chart(emp_chart, use_container_width=True)
+    else:
+        st.info("Not enough data for meaningful employee analysis (need at least 3 entries per employee).")
+
 def render_compliance_trend(historical_data):
     """Render compliance trend chart"""
     st.header("Compliance Trend")
@@ -1092,15 +1310,23 @@ def main():
     st.title("📊 Timesheet Compliance Dashboard")
     st.markdown("### View team compliance metrics and track missing timesheets")
     
-    load_secrets()
+    # Auto-connect to Odoo with permanent credentials
+    if not st.session_state.odoo_uid or not st.session_state.odoo_models:
+        with st.spinner("Connecting to Odoo..."):
+            uid, models = authenticate_odoo(
+                st.session_state.odoo_url,
+                st.session_state.odoo_db, 
+                st.session_state.odoo_username,
+                st.session_state.odoo_password
+            )
+            
+            if uid and models:
+                st.session_state.odoo_uid = uid
+                st.session_state.odoo_models = models
 
     # Sidebar content
     with st.sidebar:
         st.header("Dashboard Controls")
-        
-        # Load secrets if not already done
-        if not st.session_state.odoo_url:
-            load_secrets()
         
         # Date selector
         st.subheader("Date Range")
@@ -1135,43 +1361,20 @@ def main():
         else:
             shift_status = "Forecasted"
         
-        # Odoo Connection Settings
+        # Connection status
         st.header("Odoo Connection")
-        
-        # Only show connection form if not connected
-        if not st.session_state.odoo_uid or not st.session_state.odoo_models:
-            odoo_url = st.text_input("Odoo URL", st.session_state.odoo_url)
-            odoo_db = st.text_input("Database", st.session_state.odoo_db)
-            odoo_username = st.text_input("Username", st.session_state.odoo_username)
-            odoo_password = st.text_input("Password", type="password", value=st.session_state.odoo_password)
-            
-            if st.button("Connect to Odoo"):
-                with st.spinner("Connecting to Odoo..."):
-                    uid, models = authenticate_odoo(odoo_url, odoo_db, odoo_username, odoo_password)
-                    
-                    if uid and models:
-                        st.session_state.odoo_uid = uid
-                        st.session_state.odoo_models = models
-                        st.session_state.odoo_db = odoo_db
-                        st.session_state.odoo_url = odoo_url
-                        st.session_state.odoo_username = odoo_username
-                        st.session_state.odoo_password = odoo_password
-                        st.success("Connected successfully!")
-                        st.rerun()
-                    else:
-                        st.error("Failed to connect to Odoo")
+        if st.session_state.odoo_uid and st.session_state.odoo_models:
+            st.success(f"✅ Connected as {st.session_state.odoo_username}")
         else:
-            st.success(f"Connected as {st.session_state.odoo_username}")
+            st.error("❌ Not connected to Odoo")
             
-            if st.button("Disconnect"):
-                st.session_state.odoo_uid = None
-                st.session_state.odoo_models = None
+            if st.button("Retry Connection"):
                 st.rerun()
             
     # Main area content
     # Check if connected to Odoo
     if not st.session_state.odoo_uid or not st.session_state.odoo_models:
-        st.warning("Please connect to Odoo using the sidebar to view dashboard data.")
+        st.error("Failed to connect to Odoo. Please check connection settings and try again.")
         return
     
     # Ensure employee data is loaded
@@ -1183,11 +1386,13 @@ def main():
     # Fetch data for dashboard
     with st.spinner("Loading dashboard data..."):
         missing_df, missing_count, timesheet_count = get_dashboard_data(end_date, shift_status)
-        
-
     
     # Render dashboard sections
     render_summary_metrics(missing_df, missing_count, timesheet_count)
+    
+    # Add the new timesheet timeliness analysis
+    render_timesheet_timeliness_analysis(start_date, end_date)
+    
     render_team_metrics(missing_df)
     render_designer_metrics(missing_df) 
     render_project_metrics(missing_df)
