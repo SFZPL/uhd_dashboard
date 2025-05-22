@@ -1071,7 +1071,7 @@ def render_timesheet_timeliness_analysis(start_date, end_date):
             x=alt.X('same_day_rate:Q', title='Same Day Entry Rate (%)'),
             y=alt.Y('employee_name:N', sort='-x', title=''),
             color=alt.Color('same_day_rate:Q', 
-                           scale=alt.Scale(scheme='RdYlGn'),
+                           scale=alt.Scale(scheme='redyellowgreen'),
                            legend=None),
             tooltip=['employee_name', 'same_day_rate:Q', 'total_entries:Q', 'avg_delay:Q']
         ).properties(height=400)
